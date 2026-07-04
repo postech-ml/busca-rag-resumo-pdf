@@ -1,0 +1,6 @@
+.env
+chroma_bancos/
+__pycache__/
+*.pyc
+.venv/
+venv/

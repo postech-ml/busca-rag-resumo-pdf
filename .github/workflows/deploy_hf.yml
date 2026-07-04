@@ -1,0 +1,65 @@
+name: Deploy para Hugging Face Spaces
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Instalar huggingface-hub
+        run: pip install huggingface-hub
+
+      - name: Deploy para Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ secrets.HF_SPACE }}
+        run: |
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+
+          api      = HfApi(token=os.environ["HF_TOKEN"])
+          space_id = os.environ["HF_SPACE"]  # ex: seu-usuario/rag-edital-pdf
+
+          # Arquivos enviados para o Space
+          # .env NAO e enviado — as chaves ficam nos Secrets do Space
+          arquivos = [
+              "main.py",
+              "indexar.py",
+              "perguntar.py",
+              "gerar_pdf.py",
+              "storage.py",
+              "requirements.txt",
+              "Dockerfile",
+              "README.md",  # mesmo README do GitHub — tem o cabecalho YAML que o HF Space le
+              "static/index.html",
+              "static/style.css",
+              "static/app.js",
+          ]
+
+          print(f"Fazendo deploy para: {space_id}")
+
+          for arquivo in arquivos:
+              if os.path.exists(arquivo):
+                  api.upload_file(
+                      path_or_fileobj=arquivo,
+                      path_in_repo=arquivo,
+                      repo_id=space_id,
+                      repo_type="space",
+                  )
+                  print(f"✅ {arquivo}")
+              else:
+                  print(f"⚠️  {arquivo} não encontrado, pulando")
+
+          print("🚀 Deploy concluído!")
+          EOF

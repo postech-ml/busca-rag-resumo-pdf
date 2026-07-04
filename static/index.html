@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG com PDFs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topo">
+  <div class="topo-plate">
+    <span class="topo-eyebrow">CATÁLOGO DIGITAL &middot; RAG</span>
+    <h1>Perguntas &amp; Respostas sobre PDFs</h1>
+    <p class="topo-sub">Gemini Embedding (multimodal) + Llama 3.1 via Groq + Flashrank + ChromaDB</p>
+  </div>
+</header>
+
+<nav class="fichario" role="tablist" aria-label="Seções">
+  <button class="ficha" data-tab="indexar" role="tab" aria-selected="true">
+    <span class="ficha-num">01</span><span class="ficha-label">Indexar</span>
+  </button>
+  <button class="ficha" data-tab="perguntar" role="tab" aria-selected="false">
+    <span class="ficha-num">02</span><span class="ficha-label">Perguntar</span>
+  </button>
+  <button class="ficha" data-tab="resumir" role="tab" aria-selected="false">
+    <span class="ficha-num">03</span><span class="ficha-label">Resumir</span>
+  </button>
+  <button class="ficha" data-tab="status" role="tab" aria-selected="false">
+    <span class="ficha-num">04</span><span class="ficha-label">Status</span>
+  </button>
+</nav>
+
+<main class="conteudo">
+
+  <!-- ══════════════ ABA: INDEXAR ══════════════ -->
+  <section class="painel" id="painel-indexar" data-panel="indexar">
+    <div class="cartao">
+      <div class="cartao-aba">Índice novo</div>
+      <p class="cartao-intro">
+        Digite um nome para o banco e envie os PDFs. Suporte a texto nativo,
+        páginas escaneadas e figuras/gráficos via embeddings multimodais.
+      </p>
+
+      <form id="form-indexar" class="form-grid">
+        <label class="campo">
+          <span>Nome do banco</span>
+          <input type="text" id="input-nome-banco" placeholder="Ex: direito_civil, medicina_2024, tcc_joao" required>
+          <small>Será convertido para minúsculas e sem espaços.</small>
+        </label>
+
+        <label class="campo campo-arquivo" id="dropzone">
+          <span>Selecione os PDFs</span>
+          <input type="file" id="input-arquivos" accept="application/pdf" multiple required>
+          <small id="lista-arquivos-selecionados">Nenhum arquivo selecionado.</small>
+        </label>
+
+        <button type="submit" class="botao botao-primario" id="btn-indexar">Indexar PDFs</button>
+      </form>
+
+      <div id="progresso-indexar" class="progresso oculto">
+        <div class="progresso-arquivo">
+          <span id="progresso-indexar-arquivo-nome">—</span>
+          <span id="progresso-indexar-arquivo-contador" class="mono"></span>
+        </div>
+        <div class="barra"><div class="barra-preenchimento" id="barra-indexar"></div></div>
+        <ul id="log-indexar" class="log"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ABA: PERGUNTAR ══════════════ -->
+  <section class="painel escondido" id="painel-perguntar" data-panel="perguntar">
+    <div class="cartao">
+      <div class="cartao-aba">Consulta</div>
+
+      <div id="perguntar-sem-banco" class="aviso oculto">Nenhum banco encontrado. Indexe PDFs primeiro.</div>
+
+      <div id="perguntar-form-wrap">
+        <div class="form-grid form-grid-2col">
+          <label class="campo">
+            <span>Banco ativo</span>
+            <select id="select-banco-perguntar"></select>
+          </label>
+          <div class="campo-duplo">
+            <label class="campo">
+              <span>Candidatos (top_k): <b id="valor-top-k">10</b></span>
+              <input type="range" id="range-top-k" min="5" max="20" value="10">
+            </label>
+            <label class="campo">
+              <span>Após rerank (top_n): <b id="valor-top-n">5</b></span>
+              <input type="range" id="range-top-n" min="2" max="8" value="5">
+            </label>
+          </div>
+        </div>
+
+        <label class="campo">
+          <span>Sua pergunta</span>
+          <textarea id="input-pergunta" rows="3" placeholder="Ex: Quais são os principais conceitos abordados?"></textarea>
+        </label>
+
+        <button class="botao botao-primario" id="btn-perguntar">Perguntar</button>
+      </div>
+
+      <div id="perguntar-carregando" class="carregando oculto">Buscando trechos relevantes e gerando resposta…</div>
+
+      <div id="resultado-perguntar" class="resultado oculto">
+        <h3>Resposta</h3>
+        <p id="texto-resposta" class="texto-resposta"></p>
+
+        <details class="trechos-detalhe">
+          <summary>Trechos utilizados</summary>
+          <div id="lista-trechos"></div>
+        </details>
+
+        <button class="botao botao-secundario" id="btn-baixar-resposta">Baixar resposta em PDF</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ABA: RESUMIR ══════════════ -->
+  <section class="painel escondido" id="painel-resumir" data-panel="resumir">
+    <div class="cartao">
+      <div class="cartao-aba">Resumo completo</div>
+      <p class="cartao-intro">Gera um resumo de todo o conteúdo de um PDF indexado, explicando cada parte encontrada.</p>
+
+      <div id="resumir-sem-banco" class="aviso oculto">Nenhum banco encontrado. Indexe PDFs primeiro.</div>
+
+      <div id="resumir-form-wrap">
+        <div class="form-grid form-grid-2col">
+          <label class="campo">
+            <span>Banco</span>
+            <select id="select-banco-resumir"></select>
+          </label>
+          <label class="campo">
+            <span>PDF para resumir</span>
+            <select id="select-pdf-resumir"></select>
+          </label>
+        </div>
+
+        <label class="campo">
+          <span>Tipo de resumo</span>
+          <select id="select-estilo-resumir"></select>
+          <small id="descricao-estilo-resumir"></small>
+        </label>
+
+        <button class="botao botao-primario" id="btn-resumir">Gerar Resumo</button>
+      </div>
+
+      <div id="progresso-resumir" class="progresso oculto">
+        <div class="progresso-arquivo">
+          <span id="progresso-resumir-etapa">—</span>
+          <span id="progresso-resumir-contador" class="mono"></span>
+        </div>
+        <div class="barra"><div class="barra-preenchimento" id="barra-resumir"></div></div>
+      </div>
+
+      <div id="resultado-resumir" class="resultado oculto">
+        <h3 id="titulo-resultado-resumir">Resultado</h3>
+        <p id="texto-resumo" class="texto-resposta"></p>
+        <button class="botao botao-secundario" id="btn-baixar-resumo">Baixar resumo em PDF</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ ABA: STATUS ══════════════ -->
+  <section class="painel escondido" id="painel-status" data-panel="status">
+    <div class="cartao">
+      <div class="cartao-aba">Status dos bancos</div>
+
+      <div id="status-bucket" class="bucket-tag"></div>
+
+      <div id="status-vazio" class="aviso oculto">Nenhum banco encontrado.</div>
+      <div id="lista-status"></div>
+
+      <div class="botoes-status">
+        <button class="botao botao-secundario" id="btn-atualizar-status">Atualizar</button>
+        <button class="botao botao-secundario" id="btn-sincronizar-bucket">Sincronizar do dataset</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="rodape">
+  <span>RAG com PDFs &middot; FastAPI + HTML</span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

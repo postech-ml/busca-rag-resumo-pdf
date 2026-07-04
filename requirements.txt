@@ -1,0 +1,34 @@
+# Backend
+fastapi>=0.111.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
+
+# Google Gemini (embeddings multimodais)
+google-genai>=1.10.0
+
+# LLM
+groq>=0.9.0
+
+# Banco vetorial
+chromadb>=0.5.23
+
+# Reranking
+flashrank>=0.2.9
+
+# Extração de texto e renderização de PDFs
+pymupdf>=1.24.11
+
+# Processamento de imagens
+Pillow>=10.0.0
+
+# Chunking de texto
+langchain-text-splitters>=0.3.3
+
+# Geração de PDF
+fpdf2>=2.7.9
+
+# Variáveis de ambiente
+python-dotenv>=1.0.0
+
+# Dataset do Hugging Face Hub usado como "bucket" (persistência do ChromaDB)
+huggingface_hub>=0.24.0
