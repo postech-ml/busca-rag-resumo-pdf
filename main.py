@@ -17,6 +17,7 @@ import uuid
 import random
 import logging
 import threading
+import concurrent.futures
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, Response, JSONResponse
@@ -96,6 +97,11 @@ async def _excecao_nao_tratada(request: Request, exc: Exception):
 JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 
+# Nº de chamadas simultâneas ao LLM durante o resumo — acelera bastante o
+# processo (o gargalo é esperar cada resposta, não CPU), mantendo margem
+# segura para o limite de 20 requisições/minuto do tier gratuito do OpenRouter.
+MAX_PARALELISMO_RESUMO = 4
+
 
 # ── helpers de banco (idênticos ao app.py, sem cache do Streamlit) ─
 def _slug(texto: str) -> str:
@@ -168,6 +174,12 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
                 temperature=0.2,
                 max_tokens=max_tokens,
                 extra_headers=extra_headers or None,
+                # Trava a rota: só usa o modelo :free, nunca cai pra uma
+                # versão paga se o provedor gratuito estiver sobrecarregado.
+                extra_body={
+                    "models": [MODELO_LLM],
+                    "provider": {"allow_fallbacks": False},
+                },
             )
             return resposta.choices[0].message.content
 
@@ -423,7 +435,7 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
     prompt     = estilo["prompt_lote"](pdf_sel, texto_lote)
 
     try:
-        return gerar_resposta(prompt, max_tokens=3072)
+        return gerar_resposta(prompt, max_tokens=6144)
     except Exception as e:
         if _eh_erro_de_tamanho(e) and len(chunks) > 1 and profundidade < 6:
             meio = len(chunks) // 2
@@ -436,37 +448,33 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
 
 def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profundidade: int = 0) -> str:
     """Consolida uma lista de textos em um único texto final. Agrupa de 3 em 3
-    e chama o LLM; se um grupo ficar grande demais, subdivide ao meio em vez
-    de gravar o erro como conteúdo. Repete até sobrar um único texto."""
+    e chama o LLM em paralelo; se um grupo ficar grande demais, subdivide ao
+    meio em vez de gravar o erro como conteúdo. Repete até sobrar um único texto."""
     if len(textos) == 1:
         return textos[0]
 
-    GRUPO = 3
-    grupos   = [textos[g:g + GRUPO] for g in range(0, len(textos), GRUPO)]
-    proximos = []
+    GRUPO  = 3
+    grupos = [textos[g:g + GRUPO] for g in range(0, len(textos), GRUPO)]
 
-    for gi, grupo in enumerate(grupos):
+    def _consolidar_grupo(grupo: list[str]) -> str:
         if len(grupo) == 1:
-            proximos.append(grupo[0])
-            continue
+            return grupo[0]
 
         sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(grupo)])
         prompt_sub = estilo["prompt_final"](pdf_sel, sub)
 
         try:
-            proximos.append(gerar_resposta(prompt_sub, max_tokens=3072))
+            return gerar_resposta(prompt_sub, max_tokens=3072)
         except Exception as e:
             if _eh_erro_de_tamanho(e) and profundidade < 6:
                 meio   = len(grupo) // 2
                 parte1 = _consolidar_recursivo(pdf_sel, estilo, grupo[:meio], profundidade + 1)
-                time.sleep(2)
                 parte2 = _consolidar_recursivo(pdf_sel, estilo, grupo[meio:], profundidade + 1)
-                proximos.append(parte1 + "\n\n" + parte2)
-            else:
-                proximos.append(f"[Erro ao consolidar grupo {gi+1}: {e}]")
+                return parte1 + "\n\n" + parte2
+            return f"[Erro ao consolidar grupo: {e}]"
 
-        if gi < len(grupos) - 1:
-            time.sleep(5)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALELISMO_RESUMO) as executor:
+        proximos = list(executor.map(_consolidar_grupo, grupos))
 
     return _consolidar_recursivo(pdf_sel, estilo, proximos, profundidade + 1)
 
@@ -488,22 +496,24 @@ def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
             job["erro"]   = "Nenhum chunk encontrado para este PDF."
             return
 
-        LOTE = 20
-        PAUSA_ENTRE_LOTES = 5
-        resumos_parciais  = []
-        total_lotes = (len(chunks) + LOTE - 1) // LOTE
+        LOTE = 40
+        lotes = [chunks[i:i + LOTE] for i in range(0, len(chunks), LOTE)]
+        total_lotes = len(lotes)
         job["total_lotes"] = total_lotes
         job["etapa"] = "analisando"
 
-        for i in range(0, len(chunks), LOTE):
-            lote       = chunks[i:i + LOTE]
-            lote_num   = i // LOTE + 1
-            job["lote_atual"] = lote_num
-
-            resumos_parciais.append(_gerar_resumo_lote_seguro(pdf_sel, estilo, lote))
-
-            if lote_num < total_lotes:
-                time.sleep(PAUSA_ENTRE_LOTES)
+        resumos_parciais = [None] * total_lotes
+        concluidos = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALELISMO_RESUMO) as executor:
+            futuros = {
+                executor.submit(_gerar_resumo_lote_seguro, pdf_sel, estilo, lote): idx
+                for idx, lote in enumerate(lotes)
+            }
+            for futuro in concurrent.futures.as_completed(futuros):
+                idx = futuros[futuro]
+                resumos_parciais[idx] = futuro.result()
+                concluidos += 1
+                job["lote_atual"] = concluidos
 
         if len(resumos_parciais) == 1:
             resumo_final = resumos_parciais[0]
