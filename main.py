@@ -97,10 +97,11 @@ async def _excecao_nao_tratada(request: Request, exc: Exception):
 JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 
-# Nº de chamadas simultâneas ao LLM durante o resumo — acelera bastante o
-# processo (o gargalo é esperar cada resposta, não CPU), mantendo margem
-# segura para o limite de 20 requisições/minuto do tier gratuito do OpenRouter.
-MAX_PARALELISMO_RESUMO = 4
+# Nº de chamadas simultâneas ao LLM durante o resumo. Mantido em 1 (sequencial):
+# o gargalo real é a fila de baixa prioridade do modelo gratuito no backend,
+# não o nosso lado — disparar chamadas em paralelo não acelera um backend
+# que já está processando na capacidade dele, só faz elas competirem.
+MAX_PARALELISMO_RESUMO = 1
 
 
 # ── helpers de banco (idênticos ao app.py, sem cache do Streamlit) ─
@@ -218,6 +219,16 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
                 tentativa, max_tentativas, espera,
             )
             time.sleep(espera)
+
+
+# Anexada a todo prompt de resumo — mantém o mesmo padrão de formatação
+# do Perguntar, pensado para facilitar a memorização ao estudar.
+INSTRUCAO_FORMATO_MD = """
+
+Formate a saida em Markdown pensando em facilitar a memorizacao:
+- Use "## " para titulos de cada parte/secao.
+- Coloque em **negrito** os termos e conceitos mais importantes.
+- Prefira listas com marcadores a paragrafos longos, sempre que possivel."""
 
 
 # ── estilos de resumo (mesmos textos do app.py) ────────────────
@@ -432,10 +443,10 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
     divide o lote ao meio e tenta cada metade recursivamente, em vez de
     gravar a mensagem de erro como se fosse conteúdo do resumo."""
     texto_lote = "\n\n---PARTE---\n\n".join(chunks)
-    prompt     = estilo["prompt_lote"](pdf_sel, texto_lote)
+    prompt     = estilo["prompt_lote"](pdf_sel, texto_lote) + INSTRUCAO_FORMATO_MD
 
     try:
-        return gerar_resposta(prompt, max_tokens=6144)
+        return gerar_resposta(prompt, max_tokens=3072)
     except Exception as e:
         if _eh_erro_de_tamanho(e) and len(chunks) > 1 and profundidade < 6:
             meio = len(chunks) // 2
@@ -461,7 +472,7 @@ def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profund
             return grupo[0]
 
         sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(grupo)])
-        prompt_sub = estilo["prompt_final"](pdf_sel, sub)
+        prompt_sub = estilo["prompt_final"](pdf_sel, sub) + INSTRUCAO_FORMATO_MD
 
         try:
             return gerar_resposta(prompt_sub, max_tokens=3072)
@@ -496,7 +507,7 @@ def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
             job["erro"]   = "Nenhum chunk encontrado para este PDF."
             return
 
-        LOTE = 40
+        LOTE = 20
         lotes = [chunks[i:i + LOTE] for i in range(0, len(chunks), LOTE)]
         total_lotes = len(lotes)
         job["total_lotes"] = total_lotes

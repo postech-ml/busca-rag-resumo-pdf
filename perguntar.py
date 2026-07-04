@@ -18,7 +18,12 @@ Use apenas as informações dos trechos fornecidos para responder.
 Ao final, cite de qual arquivo cada informação veio.
 Se a informação não estiver nos trechos, diga isso claramente.
 Quando um trecho se referir a uma imagem, figura ou página escaneada,
-descreva o que foi encontrado com base no contexto disponível."""
+descreva o que foi encontrado com base no contexto disponível.
+
+Formate a resposta em Markdown pensando em facilitar a memorização:
+- Use "## " para títulos de seções quando a resposta tiver mais de um tópico.
+- Coloque em **negrito** os termos, conceitos e nomes mais importantes.
+- Prefira listas com marcadores a parágrafos longos, sempre que possível."""
 
 
 def gerar_embedding_pergunta(cliente: genai.Client, pergunta: str) -> list[float]:

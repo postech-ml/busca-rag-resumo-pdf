@@ -7,6 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -109,7 +111,7 @@
 
       <div id="resultado-perguntar" class="resultado oculto">
         <h3>Resposta</h3>
-        <p id="texto-resposta" class="texto-resposta"></p>
+        <div id="texto-resposta" class="texto-resposta"></div>
 
         <details class="trechos-detalhe">
           <summary>Trechos utilizados</summary>
@@ -160,7 +162,7 @@
 
       <div id="resultado-resumir" class="resultado oculto">
         <h3 id="titulo-resultado-resumir">Resultado</h3>
-        <p id="texto-resumo" class="texto-resposta"></p>
+        <div id="texto-resumo" class="texto-resposta"></div>
         <button class="botao botao-secundario" id="btn-baixar-resumo">Baixar resumo em PDF</button>
       </div>
     </div>
