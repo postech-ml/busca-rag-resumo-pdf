@@ -55,7 +55,7 @@ def buscar_trechos(
             "texto":     doc,
             "arquivo":   meta["arquivo"],
             "tipo":      tipo,
-            "relevancia": round(1 - dist, 3),
+            "relevancia": round(float(1 - dist), 3),
             "meta":      meta
         })
     return trechos
@@ -81,7 +81,7 @@ def rerankar_trechos(
             "arquivo":           trechos[r["id"]]["arquivo"],
             "tipo":              trechos[r["id"]]["tipo"],
             "relevancia":        trechos[r["id"]]["relevancia"],
-            "relevancia_rerank": round(r["score"], 4),
+            "relevancia_rerank": round(float(r["score"]), 4),
             "meta":              trechos[r["id"]]["meta"]
         }
         for r in resultados[:top_n]
