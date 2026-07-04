@@ -18,7 +18,7 @@ import random
 import logging
 import threading
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -78,6 +78,14 @@ async def _ao_iniciar():
     # Restaura os bancos já indexados do Dataset do Hugging Face (se configurado).
     # Sem isso, o ChromaDB local seria perdido a cada reinício do container.
     storage.sincronizar_tudo_do_bucket()
+
+
+@app.exception_handler(Exception)
+async def _excecao_nao_tratada(request: Request, exc: Exception):
+    # Sem isso, uma exceção fora dos try/except vira uma resposta 500 em
+    # texto puro (não-JSON) — o frontend não consegue mostrar o motivo real.
+    logger.exception("Erro não tratado em %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 # jobs em memória (indexação e resumo rodam em background threads)
@@ -571,8 +579,13 @@ async def api_perguntar(req: PerguntarRequest):
     if not req.pergunta.strip():
         raise HTTPException(400, "Digite uma pergunta.")
 
-    colecao = get_colecao(req.banco)
-    if colecao.count() == 0:
+    try:
+        colecao = get_colecao(req.banco)
+        vazio   = colecao.count() == 0
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao abrir o banco '{req.banco}': {e}")
+
+    if vazio:
         raise HTTPException(400, "Banco vazio. Indexe PDFs primeiro.")
 
     try:
