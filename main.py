@@ -3,11 +3,11 @@ main.py — Backend FastAPI para RAG com PDFs
 Substitui a interface Streamlit por uma API + frontend HTML puro.
 
 Embeddings : Gemini gemini-embedding-2-preview (multimodal — texto + imagens)
-LLM        : Groq  llama-3.1-8b-instant
+LLM        : OpenRouter openai/gpt-oss-120b:free (grátis, 131K de contexto)
 
 Variáveis de ambiente necessárias no .env:
     GEMINI_API_KEY=...
-    GROQ_API_KEY=...
+    OPENROUTER_API_KEY=...
 """
 
 import os
@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 import chromadb
 from google import genai
-from groq import Groq
+from openai import OpenAI
 from flashrank import Ranker
 from dotenv import load_dotenv
 
@@ -40,8 +40,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── configuração ──────────────────────────────────────────────
-CHROMA_BASE_DIR = "./chroma_bancos"
-MODELO_GROQ     = "llama-3.1-8b-instant"
+CHROMA_BASE_DIR   = "./chroma_bancos"
+MODELO_LLM        = "openai/gpt-oss-120b:free"  # via OpenRouter — grátis, 131K de contexto
+OPENROUTER_URL    = "https://openrouter.ai/api/v1"
+# Opcionais — usados só para identificar o app nos rankings do OpenRouter
+OPENROUTER_SITE_URL  = os.environ.get("OPENROUTER_SITE_URL", "")
+OPENROUTER_SITE_NAME = os.environ.get("OPENROUTER_SITE_NAME", "RAG com PDFs")
 
 _ERROS_429 = ("429", "rate_limit_exceeded", "rate limit", "too many requests")
 _ERROS_413 = ("413", "request too large", "request_too_large")
@@ -51,24 +55,24 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── inicialização dos clientes (uma vez, no startup) ───────────
 def _inicializar():
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    groq_key   = os.environ.get("GROQ_API_KEY")
+    gemini_key      = os.environ.get("GEMINI_API_KEY")
+    openrouter_key  = os.environ.get("OPENROUTER_API_KEY")
 
     faltando = []
     if not gemini_key:
         faltando.append("GEMINI_API_KEY")
-    if not groq_key:
-        faltando.append("GROQ_API_KEY")
+    if not openrouter_key:
+        faltando.append("OPENROUTER_API_KEY")
     if faltando:
         raise RuntimeError(f"Chaves não encontradas no .env: {', '.join(faltando)}")
 
     cliente_gemini = genai.Client(api_key=gemini_key)
-    cliente_groq   = Groq(api_key=groq_key)
+    cliente_llm    = OpenAI(api_key=openrouter_key, base_url=OPENROUTER_URL)
     ranker         = Ranker()
-    return cliente_gemini, cliente_groq, ranker
+    return cliente_gemini, cliente_llm, ranker
 
 
-cliente_gemini, cliente_groq, ranker = _inicializar()
+cliente_gemini, cliente_llm, ranker = _inicializar()
 
 app = FastAPI(title="RAG com PDFs")
 
@@ -142,21 +146,28 @@ def listar_pdfs(nome_banco: str) -> list[str]:
         return []
 
 
-# ── geração de resposta via Groq com backoff exponencial ──────
-def gerar_resposta(prompt: str, max_tentativas: int = 6) -> str:
+# ── geração de resposta via OpenRouter com backoff exponencial ─
+def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096) -> str:
     espera_base = 5.0
     espera_max  = 90.0
 
+    extra_headers = {}
+    if OPENROUTER_SITE_URL:
+        extra_headers["HTTP-Referer"] = OPENROUTER_SITE_URL
+    if OPENROUTER_SITE_NAME:
+        extra_headers["X-Title"] = OPENROUTER_SITE_NAME
+
     for tentativa in range(1, max_tentativas + 1):
         try:
-            resposta = cliente_groq.chat.completions.create(
-                model=MODELO_GROQ,
+            resposta = cliente_llm.chat.completions.create(
+                model=MODELO_LLM,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=0.2,
-                max_tokens=4096,
+                max_tokens=max_tokens,
+                extra_headers=extra_headers or None,
             )
             return resposta.choices[0].message.content
 
@@ -176,7 +187,7 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6) -> str:
 
             if tentativa == max_tentativas:
                 raise RuntimeError(
-                    f"Limite de {max_tentativas} tentativas no Groq. Último erro: {e}"
+                    f"Limite de {max_tentativas} tentativas no OpenRouter. Último erro: {e}"
                 )
 
             retry_after = None
@@ -191,7 +202,7 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6) -> str:
                 espera = max(espera, 2.0)
 
             logger.warning(
-                "[gerar_resposta] 429 Groq (tentativa %d/%d). Aguardando %.1fs...",
+                "[gerar_resposta] 429 OpenRouter (tentativa %d/%d). Aguardando %.1fs...",
                 tentativa, max_tentativas, espera,
             )
             time.sleep(espera)
@@ -400,6 +411,69 @@ async def api_indexar_iniciar(
 # ══════════════════════════════════════════════════════════════
 # JOB: RESUMIR (roda em thread separada, progresso via polling)
 # ══════════════════════════════════════════════════════════════
+def _eh_erro_de_tamanho(e: Exception) -> bool:
+    return "muito grande" in str(e).lower()
+
+
+def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], profundidade: int = 0) -> str:
+    """Gera o resumo de um lote de chunks. Se o prompt ficar grande demais,
+    divide o lote ao meio e tenta cada metade recursivamente, em vez de
+    gravar a mensagem de erro como se fosse conteúdo do resumo."""
+    texto_lote = "\n\n---PARTE---\n\n".join(chunks)
+    prompt     = estilo["prompt_lote"](pdf_sel, texto_lote)
+
+    try:
+        return gerar_resposta(prompt, max_tokens=3072)
+    except Exception as e:
+        if _eh_erro_de_tamanho(e) and len(chunks) > 1 and profundidade < 6:
+            meio = len(chunks) // 2
+            parte1 = _gerar_resumo_lote_seguro(pdf_sel, estilo, chunks[:meio], profundidade + 1)
+            time.sleep(2)
+            parte2 = _gerar_resumo_lote_seguro(pdf_sel, estilo, chunks[meio:], profundidade + 1)
+            return parte1 + "\n\n" + parte2
+        return f"[Erro no lote: {e}]"
+
+
+def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profundidade: int = 0) -> str:
+    """Consolida uma lista de textos em um único texto final. Agrupa de 3 em 3
+    e chama o LLM; se um grupo ficar grande demais, subdivide ao meio em vez
+    de gravar o erro como conteúdo. Repete até sobrar um único texto."""
+    if len(textos) == 1:
+        return textos[0]
+
+    GRUPO = 3
+    grupos   = [textos[g:g + GRUPO] for g in range(0, len(textos), GRUPO)]
+    proximos = []
+
+    for gi, grupo in enumerate(grupos):
+        if len(grupo) == 1:
+            proximos.append(grupo[0])
+            continue
+
+        sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(grupo)])
+        prompt_sub = estilo["prompt_final"](pdf_sel, sub)
+
+        try:
+            proximos.append(gerar_resposta(prompt_sub, max_tokens=3072))
+        except Exception as e:
+            if _eh_erro_de_tamanho(e) and profundidade < 6:
+                meio   = len(grupo) // 2
+                parte1 = _consolidar_recursivo(pdf_sel, estilo, grupo[:meio], profundidade + 1)
+                time.sleep(2)
+                parte2 = _consolidar_recursivo(pdf_sel, estilo, grupo[meio:], profundidade + 1)
+                proximos.append(parte1 + "\n\n" + parte2)
+            else:
+                proximos.append(f"[Erro ao consolidar grupo {gi+1}: {e}]")
+
+        if gi < len(grupos) - 1:
+            time.sleep(5)
+
+    return _consolidar_recursivo(pdf_sel, estilo, proximos, profundidade + 1)
+
+
+# ══════════════════════════════════════════════════════════════
+# JOB: RESUMIR (roda em thread separada, progresso via polling)
+# ══════════════════════════════════════════════════════════════
 def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
     job = JOBS[job_id]
     try:
@@ -425,13 +499,8 @@ def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
             lote       = chunks[i:i + LOTE]
             lote_num   = i // LOTE + 1
             job["lote_atual"] = lote_num
-            texto_lote = "\n\n---PARTE---\n\n".join(lote)
-            prompt     = estilo["prompt_lote"](pdf_sel, texto_lote)
 
-            try:
-                resumos_parciais.append(gerar_resposta(prompt))
-            except Exception as e:
-                resumos_parciais.append(f"[Erro no lote {lote_num}: {e}]")
+            resumos_parciais.append(_gerar_resumo_lote_seguro(pdf_sel, estilo, lote))
 
             if lote_num < total_lotes:
                 time.sleep(PAUSA_ENTRE_LOTES)
@@ -440,30 +509,7 @@ def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
             resumo_final = resumos_parciais[0]
         else:
             job["etapa"] = "consolidando"
-            GRUPO  = 3
-            grupos = [resumos_parciais[g:g + GRUPO] for g in range(0, len(resumos_parciais), GRUPO)]
-            intermediarios = []
-            for gi, grupo in enumerate(grupos):
-                sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(grupo)])
-                prompt_sub = estilo["prompt_final"](pdf_sel, sub)
-                try:
-                    intermediarios.append(gerar_resposta(prompt_sub))
-                    if gi < len(grupos) - 1:
-                        time.sleep(PAUSA_ENTRE_LOTES)
-                except Exception as e:
-                    intermediarios.append(f"[Erro grupo {gi+1}: {e}]")
-
-            if len(intermediarios) == 1:
-                resumo_final = intermediarios[0]
-            else:
-                consolidado_final = "\n\n===\n\n".join(
-                    [f"Parte {i+1}:\n{r}" for i, r in enumerate(intermediarios)]
-                )
-                prompt_final = estilo["prompt_final"](pdf_sel, consolidado_final)
-                try:
-                    resumo_final = gerar_resposta(prompt_final)
-                except Exception as e:
-                    resumo_final = f"(Erro final: {e})\n\n" + consolidado_final
+            resumo_final = _consolidar_recursivo(pdf_sel, estilo, resumos_parciais)
 
         job["resumo_final"] = resumo_final
         job["status"] = "concluido"

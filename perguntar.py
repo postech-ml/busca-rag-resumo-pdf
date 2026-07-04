@@ -1,7 +1,7 @@
 """
 perguntar.py — busca, rerank e montagem de contexto
 Usa gemini-embedding-2-preview para embedding da pergunta
-LLM: Groq llama-3.1-8b-instant (via app.py)
+LLM: OpenRouter openai/gpt-oss-120b:free (via main.py)
 """
 
 from google import genai
