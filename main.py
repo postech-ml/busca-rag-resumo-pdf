@@ -537,54 +537,37 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
 
 
 def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profundidade: int = 0) -> str:
-    """Consolida uma lista de textos, reduzindo o volume em rodadas (agrupa de
-    3 em 3 e resume cada grupo via LLM, em paralelo). Importante: uma vez que
-    já houve pelo menos uma rodada de consolidação (documento grande o
-    suficiente pra isso), a última etapa NÃO pede pro modelo reescrever tudo
-    numa única resposta — isso arriscaria estourar o limite de tokens de
-    saída e cortar o resumo no meio (o que já aconteceu). Em vez disso, os
-    pedaços finais são concatenados, preservando o conteúdo por completo.
-    Documentos pequenos (que nunca precisaram de mais de uma rodada) ainda
-    recebem a passada final de polimento normalmente, sem esse risco."""
+    """Combina os resumos parciais em um texto final.
+
+    Documentos pequenos (poucos lotes desde o início): uma única chamada ao
+    modelo produz um texto coeso e unificado — seguro, já que o volume total
+    é pequeno o suficiente pra não estourar o limite de tokens de saída.
+
+    Documentos grandes: qualquer tentativa de pedir pro modelo reescrever
+    tudo numa resposta só arrisca cortar o resumo no meio (já aconteceu mais
+    de uma vez, inclusive em etapas intermediárias de consolidação — juntar
+    só 2 ou 3 resumos parciais já detalhados pode facilmente passar do
+    limite). Por isso, a combinação é feita por concatenação direta, sem
+    chamar o modelo de novo — garante que nada seja perdido nem cortado,
+    ao custo de uma transição um pouco menos "costurada" entre as partes."""
     if len(textos) == 1:
         return textos[0]
 
-    GRUPO = 2
+    LIMITE_MERGE_LLM = 3  # só tenta uma passada única de polimento com poucos pedaços
 
-    def _consolidar_grupo(grupo: list[str]) -> str:
-        if len(grupo) == 1:
-            return grupo[0]
-
-        sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(grupo)])
+    if profundidade == 0 and len(textos) <= LIMITE_MERGE_LLM:
+        sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(textos)])
         prompt_sub = estilo["prompt_final"](pdf_sel, sub) + INSTRUCAO_FORMATO_MD + INSTRUCAO_PROFUNDIDADE
 
         try:
             return gerar_resposta(prompt_sub, max_tokens=8192)
         except Exception as e:
-            if _eh_erro_de_tamanho(e) and profundidade < 6:
-                meio   = len(grupo) // 2
-                parte1 = _consolidar_recursivo(pdf_sel, estilo, grupo[:meio], profundidade + 1)
-                parte2 = _consolidar_recursivo(pdf_sel, estilo, grupo[meio:], profundidade + 1)
-                return parte1 + "\n\n" + parte2
-            # Idem: erro real propaga, não vira texto de conteúdo.
-            raise
+            if not _eh_erro_de_tamanho(e):
+                raise
+            # Se mesmo esse único pedido já for grande demais, cai pra
+            # concatenação abaixo em vez de arriscar cortar.
 
-    if len(textos) <= GRUPO:
-        if profundidade == 0:
-            # Documento pequeno desde o início — só essa rodada existe,
-            # seguro pedir um texto único e coeso ao modelo.
-            return _consolidar_grupo(textos)
-        # Já passamos por pelo menos uma consolidação anterior — o conteúdo
-        # acumulado pode ser grande demais pra uma resposta só. Concatena
-        # direto em vez de arriscar cortar o resumo no meio.
-        return "\n\n---\n\n".join(textos)
-
-    grupos = [textos[g:g + GRUPO] for g in range(0, len(textos), GRUPO)]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALELISMO_RESUMO) as executor:
-        proximos = list(executor.map(_consolidar_grupo, grupos))
-
-    return _consolidar_recursivo(pdf_sel, estilo, proximos, profundidade + 1)
+    return "\n\n---\n\n".join(textos)
 
 
 # ══════════════════════════════════════════════════════════════
