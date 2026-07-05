@@ -96,11 +96,10 @@ async def _excecao_nao_tratada(request: Request, exc: Exception):
 JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 
-# Nº de chamadas simultâneas ao LLM durante o resumo. Mantido em 1 (sequencial):
-# o gargalo real é a fila de baixa prioridade do modelo gratuito no backend,
-# não o nosso lado — disparar chamadas em paralelo não acelera um backend
-# que já está processando na capacidade dele, só faz elas competirem.
-MAX_PARALELISMO_RESUMO = 1
+# Nº de chamadas simultâneas ao LLM durante o resumo. Em modelo gratuito isso
+# não ajudava (gargalo era a fila do provedor); no tier pago, com throughput
+# real disponível, paralelizar acelera bastante o processo.
+MAX_PARALELISMO_RESUMO = 5
 
 # ── rastreamento e controle de requisições/minuto ao LLM ────────
 LIMITE_REQUISICOES_MINUTO = 1000  # tier pago do OpenRouter — bem mais folgado; valor conservador de referência
@@ -511,7 +510,7 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
     prompt     = estilo["prompt_lote"](pdf_sel, texto_lote) + INSTRUCAO_FORMATO_MD
 
     try:
-        return gerar_resposta(prompt, max_tokens=8192)
+        return gerar_resposta(prompt, max_tokens=3072)
     except Exception as e:
         if _eh_erro_de_tamanho(e) and len(chunks) > 1 and profundidade < 6:
             meio = len(chunks) // 2
@@ -576,7 +575,7 @@ def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
             job["erro"]   = "Nenhum chunk encontrado para este PDF."
             return
 
-        LOTE = 60
+        LOTE = 20
         lotes = [chunks[i:i + LOTE] for i in range(0, len(chunks), LOTE)]
         total_lotes = len(lotes)
         job["total_lotes"] = total_lotes
