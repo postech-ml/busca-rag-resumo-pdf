@@ -101,7 +101,15 @@ def extrair_conteudo_pdf(conteudo: bytes) -> dict:
                         "imagem": img
                     })
             else:
-                # Página escaneada — indexa como imagem
+                # Pouco ou nenhum texto nativo — indexa a página como imagem
+                # (não perde o conteúdo visual). Mas se houver QUALQUER texto
+                # residual (ex: página com poucos artigos, tabela esparsa),
+                # aproveita esse texto também — senão o Resumir/Perguntar
+                # nunca "veem" esse conteúdo, já que eles só leem o campo de
+                # texto, e a página escaneada guarda só um placeholder ali.
+                if texto_nativo:
+                    texto_acumulado.append(f"[Página {num_pag}]\n{texto_nativo}")
+
                 img_pagina = _pagina_para_pil(pagina)
                 imagens_pagina.append({
                     "pagina": num_pag,
