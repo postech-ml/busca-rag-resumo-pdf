@@ -92,18 +92,28 @@ _JOBS_LOCK = threading.Lock()
 # que já está processando na capacidade dele, só faz elas competirem.
 MAX_PARALELISMO_RESUMO = 1
 
-# ── rastreamento de requisições/minuto ao LLM (exibido no frontend) ─
+# ── rastreamento e controle de requisições/minuto ao LLM ────────
 LIMITE_REQUISICOES_MINUTO = 15  # tier gratuito do Gemini (gemini-2.5-flash-lite)
+MARGEM_SEGURANCA_REQUISICOES = 1  # deixa folga antes do limite real, evitando o 429
 _req_lock = threading.Lock()
 _req_timestamps: collections.deque = collections.deque()
 
 
-def _registrar_requisicao_llm():
-    agora = time.time()
-    with _req_lock:
-        _req_timestamps.append(agora)
-        while _req_timestamps and agora - _req_timestamps[0] > 60:
-            _req_timestamps.popleft()
+def _aguardar_vaga_llm():
+    """Bloqueia até haver uma vaga dentro do limite de requisições/minuto.
+    Evita bater no 429 em vez de só reagir a ele — espera proativamente
+    quando já estamos perto do teto do tier gratuito."""
+    limite_seguro = max(1, LIMITE_REQUISICOES_MINUTO - MARGEM_SEGURANCA_REQUISICOES)
+    while True:
+        agora = time.time()
+        with _req_lock:
+            while _req_timestamps and agora - _req_timestamps[0] > 60:
+                _req_timestamps.popleft()
+            if len(_req_timestamps) < limite_seguro:
+                _req_timestamps.append(agora)
+                return
+            espera = 60 - (agora - _req_timestamps[0]) + 0.5
+        time.sleep(max(espera, 0.5))
 
 
 def _contar_requisicoes_ultimo_minuto() -> int:
@@ -170,7 +180,7 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
 
     for tentativa in range(1, max_tentativas + 1):
         try:
-            _registrar_requisicao_llm()
+            _aguardar_vaga_llm()
             resposta = cliente_gemini.models.generate_content(
                 model=MODELO_LLM,
                 contents=prompt,
