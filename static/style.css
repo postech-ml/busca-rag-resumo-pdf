@@ -594,6 +594,32 @@ button:focus-visible {
 
 .banco-erro { color: var(--coral); }
 
+/* ── cobertura de páginas ──────────────────────────────── */
+.cobertura-pdf {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: -6px 0 4px;
+}
+.cobertura-pdf.ok {
+  background: #e9f3ee;
+  color: var(--verdigris);
+  border: 1px solid var(--verdigris);
+}
+.cobertura-pdf.aviso {
+  background: #fbf3e0;
+  color: var(--brass-dark);
+  border: 1px solid var(--brass);
+}
+.cobertura-pdf.desconhecido {
+  background: #eef1e6;
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+
 /* ── bucket / storage ──────────────────────────────────── */
 .bucket-tag {
   display: inline-flex;

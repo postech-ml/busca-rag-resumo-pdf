@@ -302,6 +302,38 @@ async function carregarBancosResumir() {
 selectBancoResumir.addEventListener("change", carregarPdfsDoBanco);
 selectEstiloResumir.addEventListener("change", atualizarDescricaoEstilo);
 
+const coberturaPdf = document.getElementById("cobertura-pdf");
+const coberturaPdfResultado = document.getElementById("cobertura-pdf-resultado");
+
+function renderizarCobertura(dados, elemento) {
+  const { total_paginas, paginas_cobertas, paginas_faltando } = dados;
+
+  if (total_paginas === null || total_paginas === undefined) {
+    elemento.className = "cobertura-pdf desconhecido";
+    elemento.textContent = `ℹ️ Este PDF foi indexado antes da checagem de cobertura existir — não é possível confirmar se todas as páginas foram capturadas.`;
+  } else if (!paginas_faltando || paginas_faltando.length === 0) {
+    elemento.className = "cobertura-pdf ok";
+    elemento.textContent = `✅ Todas as ${total_paginas} páginas do PDF têm conteúdo indexado.`;
+  } else {
+    elemento.className = "cobertura-pdf aviso";
+    const listaFaltando = paginas_faltando.length > 12
+      ? paginas_faltando.slice(0, 12).join(", ") + `... (+${paginas_faltando.length - 12})`
+      : paginas_faltando.join(", ");
+    elemento.textContent = `⚠️ ${paginas_cobertas}/${total_paginas} páginas cobertas. Faltando: ${listaFaltando}. Considere reindexar este PDF.`;
+  }
+  elemento.classList.remove("oculto");
+}
+
+async function verificarCobertura(banco, pdf, elemento) {
+  if (!banco || !pdf) { elemento.classList.add("oculto"); return; }
+  try {
+    const dados = await apiGet(`/api/bancos/${encodeURIComponent(banco)}/pdfs/${encodeURIComponent(pdf)}/cobertura`);
+    renderizarCobertura(dados, elemento);
+  } catch (e) {
+    elemento.classList.add("oculto");
+  }
+}
+
 function atualizarDescricaoEstilo() {
   const atual = estilosResumo.find((e) => e.chave === selectEstiloResumir.value);
   descricaoEstiloResumir.textContent = atual ? atual.descricao : "";
@@ -315,10 +347,15 @@ async function carregarPdfsDoBanco() {
     selectPdfResumir.innerHTML = pdfs.length
       ? pdfs.map((p) => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("")
       : `<option value="">Nenhum PDF neste banco</option>`;
+    await verificarCobertura(banco, selectPdfResumir.value, coberturaPdf);
   } catch (e) {
     alert("Erro ao carregar PDFs: " + e.message);
   }
 }
+
+selectPdfResumir.addEventListener("change", () => {
+  verificarCobertura(selectBancoResumir.value, selectPdfResumir.value, coberturaPdf);
+});
 
 btnResumir.addEventListener("click", async () => {
   const banco = selectBancoResumir.value;
@@ -362,6 +399,7 @@ async function acompanharJobResumir(jobId, pdf, banco, estiloChave) {
         const estiloLabel = estiloInfo ? estiloInfo.label : estiloChave;
         ultimoResumo = { nome_pdf: pdf, banco, resumo: job.resumo_final, estilo_label: estiloLabel };
         tituloResultadoResumir.textContent = `Resultado — ${estiloLabel}`;
+        await verificarCobertura(banco, pdf, coberturaPdfResultado);
         textoResumo.classList.add("markdown-corpo");
         renderizarMarkdown(job.resumo_final, textoResumo);
         resultadoResumir.classList.remove("oculto");

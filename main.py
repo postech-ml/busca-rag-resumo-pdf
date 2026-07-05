@@ -663,6 +663,38 @@ async def api_listar_pdfs(banco: str):
     return {"pdfs": listar_pdfs(banco)}
 
 
+@app.get("/api/bancos/{banco}/pdfs/{pdf}/cobertura")
+async def api_cobertura_pdf(banco: str, pdf: str):
+    """Compara o total de páginas do PDF com as páginas que realmente têm
+    conteúdo indexado, pra dar confiança de que o Resumir/Perguntar
+    enxergam o documento inteiro (e não só uma parte dele)."""
+    if banco not in listar_bancos():
+        raise HTTPException(404, f"Banco '{banco}' não encontrado.")
+
+    colecao = get_colecao(banco)
+    resultado = colecao.get(where={"arquivo": pdf})
+    metadatas = resultado["metadatas"]
+
+    if not metadatas:
+        raise HTTPException(404, f"PDF '{pdf}' não encontrado no banco '{banco}'.")
+
+    total_paginas = max((m.get("total_paginas") or 0 for m in metadatas), default=0)
+    paginas_cobertas = sorted({m["pagina"] for m in metadatas if "pagina" in m and m["pagina"] is not None})
+
+    if total_paginas > 0:
+        faltando = sorted(set(range(1, total_paginas + 1)) - set(paginas_cobertas))
+    else:
+        # PDFs indexados antes dessa checagem existir não têm total_paginas
+        # salvo — não dá pra saber se falta algo, melhor avisar isso.
+        faltando = None
+
+    return {
+        "total_paginas": total_paginas or None,
+        "paginas_cobertas": len(paginas_cobertas),
+        "paginas_faltando": faltando,
+    }
+
+
 @app.delete("/api/bancos/{banco}")
 async def api_excluir_banco(banco: str):
     if banco not in listar_bancos():

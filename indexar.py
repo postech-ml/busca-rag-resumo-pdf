@@ -65,32 +65,36 @@ def _extrair_imagens_pagina(pagina: fitz.Page) -> list[Image.Image]:
 def extrair_conteudo_pdf(conteudo: bytes) -> dict:
     """
     Extrai conteúdo de um PDF separando:
-    - chunks de texto (para embedding de texto)
+    - chunks de texto por página (para embedding de texto, com nº da página)
     - imagens de páginas (para embedding de imagem)
 
     Retorna:
         {
-            "chunks_texto": list[str],
+            "chunks_texto": list[{"pagina": int, "texto": str}],
             "imagens_pagina": list[{"pagina": int, "imagem": PIL.Image}],
-            "imagens_figura": list[{"pagina": int, "figura": int, "imagem": PIL.Image}]
+            "imagens_figura": list[{"pagina": int, "figura": int, "imagem": PIL.Image}],
+            "total_paginas": int,
         }
     """
     chunks_texto    = []
     imagens_pagina  = []
     imagens_figura  = []
-    texto_acumulado = []
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
         tmp.write(conteudo)
         tmp.flush()
         doc = fitz.open(tmp.name)
+        total_paginas = doc.page_count
 
         for num_pag, pagina in enumerate(doc, 1):
             texto_nativo = pagina.get_text().strip()
 
             if len(texto_nativo) >= MIN_CHARS_TEXTO:
-                # Página com texto nativo — acumula para chunking
-                texto_acumulado.append(f"[Página {num_pag}]\n{texto_nativo}")
+                # Página com texto nativo — pica só essa página, guardando o
+                # número dela em cada chunk resultante (permite depois
+                # verificar se todas as páginas do PDF foram cobertas).
+                for pedaco in splitter.split_text(texto_nativo):
+                    chunks_texto.append({"pagina": num_pag, "texto": pedaco})
 
                 # Extrai figuras embutidas para embedding visual
                 figuras = _extrair_imagens_pagina(pagina)
@@ -108,7 +112,8 @@ def extrair_conteudo_pdf(conteudo: bytes) -> dict:
                 # nunca "veem" esse conteúdo, já que eles só leem o campo de
                 # texto, e a página escaneada guarda só um placeholder ali.
                 if texto_nativo:
-                    texto_acumulado.append(f"[Página {num_pag}]\n{texto_nativo}")
+                    for pedaco in splitter.split_text(texto_nativo):
+                        chunks_texto.append({"pagina": num_pag, "texto": pedaco})
 
                 img_pagina = _pagina_para_pil(pagina)
                 imagens_pagina.append({
@@ -116,15 +121,11 @@ def extrair_conteudo_pdf(conteudo: bytes) -> dict:
                     "imagem": img_pagina
                 })
 
-    # Gera chunks do texto acumulado
-    if texto_acumulado:
-        texto_completo = "\n\n".join(texto_acumulado)
-        chunks_texto   = splitter.split_text(texto_completo)
-
     return {
         "chunks_texto":   chunks_texto,
         "imagens_pagina": imagens_pagina,
         "imagens_figura": imagens_figura,
+        "total_paginas":  total_paginas,
     }
 
 
@@ -212,6 +213,7 @@ def indexar_pdf_bytes(
         chunks_texto   = conteudo_pdf["chunks_texto"]
         imgs_pagina    = conteudo_pdf["imagens_pagina"]
         imgs_figura    = conteudo_pdf["imagens_figura"]
+        total_paginas  = conteudo_pdf["total_paginas"]
 
         total_items = len(chunks_texto) + len(imgs_pagina) + len(imgs_figura)
         if total_items == 0:
@@ -219,7 +221,7 @@ def indexar_pdf_bytes(
 
         print(f"[indexar] '{nome}' → {len(chunks_texto)} chunks texto, "
               f"{len(imgs_pagina)} páginas escaneadas, "
-              f"{len(imgs_figura)} figuras")
+              f"{len(imgs_figura)} figuras, {total_paginas} páginas no total")
 
         ids        = []
         embeddings = []
@@ -229,12 +231,19 @@ def indexar_pdf_bytes(
         total_lotes = (len(chunks_texto) + BATCH_SIZE - 1) // BATCH_SIZE or 1
 
         # ── 1. Embeddings de texto ────────────────────────────
-        for i, chunk in enumerate(chunks_texto):
+        for i, item in enumerate(chunks_texto):
+            chunk = item["texto"]
             emb = _embed_com_retry(cliente, chunk, "RETRIEVAL_DOCUMENT")
             ids.append(f"{nome}_texto_{i}")
             embeddings.append(emb)
             documents.append(chunk)
-            metadatas.append({"arquivo": nome, "tipo": "texto", "chunk": i})
+            metadatas.append({
+                "arquivo": nome,
+                "tipo": "texto",
+                "chunk": i,
+                "pagina": item["pagina"],
+                "total_paginas": total_paginas,
+            })
             contador += 1
 
             if callback and i % BATCH_SIZE == 0:
@@ -257,7 +266,8 @@ def indexar_pdf_bytes(
             metadatas.append({
                 "arquivo": nome,
                 "tipo":    "pagina_escaneada",
-                "pagina":  num_pag
+                "pagina":  num_pag,
+                "total_paginas": total_paginas,
             })
             time.sleep(2)  # pausa entre imagens
 
@@ -276,7 +286,8 @@ def indexar_pdf_bytes(
                 "arquivo": nome,
                 "tipo":    "figura",
                 "pagina":  num_pag,
-                "figura":  num_fig
+                "figura":  num_fig,
+                "total_paginas": total_paginas,
             })
             time.sleep(2)  # pausa entre imagens
 
