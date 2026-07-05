@@ -787,7 +787,7 @@ async def api_gerar_pdf_resumo(req: GerarPdfResumoRequest):
 # FRONTEND (HTML estático)
 # ══════════════════════════════════════════════════════════════
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
-
+#1
 
 @app.get("/")
 async def index():
