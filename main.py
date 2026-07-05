@@ -543,7 +543,7 @@ def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profund
         prompt_sub = estilo["prompt_final"](pdf_sel, sub) + INSTRUCAO_FORMATO_MD
 
         try:
-            return gerar_resposta(prompt_sub, max_tokens=3072)
+            return gerar_resposta(prompt_sub, max_tokens=8192)
         except Exception as e:
             if _eh_erro_de_tamanho(e) and profundidade < 6:
                 meio   = len(grupo) // 2
