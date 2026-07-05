@@ -3,11 +3,10 @@ main.py — Backend FastAPI para RAG com PDFs
 Substitui a interface Streamlit por uma API + frontend HTML puro.
 
 Embeddings : Gemini gemini-embedding-2-preview (multimodal — texto + imagens)
-LLM        : OpenRouter openai/gpt-oss-120b:free (grátis, 131K de contexto)
+LLM        : Gemini gemini-2.5-flash-lite (grátis, 1M de contexto, infraestrutura própria do Google)
 
-Variáveis de ambiente necessárias no .env:
+Variável de ambiente necessária no .env:
     GEMINI_API_KEY=...
-    OPENROUTER_API_KEY=...
 """
 
 import os
@@ -17,6 +16,7 @@ import uuid
 import random
 import logging
 import threading
+import collections
 import concurrent.futures
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 import chromadb
 from google import genai
-from openai import OpenAI
+from google.genai import types
 from flashrank import Ranker
 from dotenv import load_dotenv
 
@@ -41,39 +41,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── configuração ──────────────────────────────────────────────
-CHROMA_BASE_DIR   = "./chroma_bancos"
-MODELO_LLM        = "openai/gpt-oss-120b:free"  # via OpenRouter — grátis, 131K de contexto
-OPENROUTER_URL    = "https://openrouter.ai/api/v1"
-# Opcionais — usados só para identificar o app nos rankings do OpenRouter
-OPENROUTER_SITE_URL  = os.environ.get("OPENROUTER_SITE_URL", "")
-OPENROUTER_SITE_NAME = os.environ.get("OPENROUTER_SITE_NAME", "RAG com PDFs")
+CHROMA_BASE_DIR = "./chroma_bancos"
+MODELO_LLM      = "gemini-2.5-flash-lite"  # grátis, 1M de contexto, infra própria do Google
 
-_ERROS_429 = ("429", "rate_limit_exceeded", "rate limit", "too many requests")
-_ERROS_413 = ("413", "request too large", "request_too_large")
+_ERROS_429 = ("429", "rate_limit_exceeded", "rate limit", "too many requests", "resource_exhausted", "quota")
+_ERROS_413 = ("413", "request too large", "request_too_large", "token limit", "context length", "context_length_exceeded")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ── inicialização dos clientes (uma vez, no startup) ───────────
 def _inicializar():
-    gemini_key      = os.environ.get("GEMINI_API_KEY")
-    openrouter_key  = os.environ.get("OPENROUTER_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
 
-    faltando = []
     if not gemini_key:
-        faltando.append("GEMINI_API_KEY")
-    if not openrouter_key:
-        faltando.append("OPENROUTER_API_KEY")
-    if faltando:
-        raise RuntimeError(f"Chaves não encontradas no .env: {', '.join(faltando)}")
+        raise RuntimeError("Chave não encontrada no .env: GEMINI_API_KEY")
 
     cliente_gemini = genai.Client(api_key=gemini_key)
-    cliente_llm    = OpenAI(api_key=openrouter_key, base_url=OPENROUTER_URL)
     ranker         = Ranker()
-    return cliente_gemini, cliente_llm, ranker
+    return cliente_gemini, ranker
 
 
-cliente_gemini, cliente_llm, ranker = _inicializar()
+cliente_gemini, ranker = _inicializar()
 
 app = FastAPI(title="RAG com PDFs")
 
@@ -102,6 +91,27 @@ _JOBS_LOCK = threading.Lock()
 # não o nosso lado — disparar chamadas em paralelo não acelera um backend
 # que já está processando na capacidade dele, só faz elas competirem.
 MAX_PARALELISMO_RESUMO = 1
+
+# ── rastreamento de requisições/minuto ao LLM (exibido no frontend) ─
+LIMITE_REQUISICOES_MINUTO = 15  # tier gratuito do Gemini (gemini-2.5-flash-lite)
+_req_lock = threading.Lock()
+_req_timestamps: collections.deque = collections.deque()
+
+
+def _registrar_requisicao_llm():
+    agora = time.time()
+    with _req_lock:
+        _req_timestamps.append(agora)
+        while _req_timestamps and agora - _req_timestamps[0] > 60:
+            _req_timestamps.popleft()
+
+
+def _contar_requisicoes_ultimo_minuto() -> int:
+    agora = time.time()
+    with _req_lock:
+        while _req_timestamps and agora - _req_timestamps[0] > 60:
+            _req_timestamps.popleft()
+        return len(_req_timestamps)
 
 
 # ── helpers de banco (idênticos ao app.py, sem cache do Streamlit) ─
@@ -153,36 +163,24 @@ def listar_pdfs(nome_banco: str) -> list[str]:
         return []
 
 
-# ── geração de resposta via OpenRouter com backoff exponencial ─
+# ── geração de resposta via Gemini com backoff exponencial ─────
 def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096) -> str:
     espera_base = 5.0
     espera_max  = 90.0
 
-    extra_headers = {}
-    if OPENROUTER_SITE_URL:
-        extra_headers["HTTP-Referer"] = OPENROUTER_SITE_URL
-    if OPENROUTER_SITE_NAME:
-        extra_headers["X-Title"] = OPENROUTER_SITE_NAME
-
     for tentativa in range(1, max_tentativas + 1):
         try:
-            resposta = cliente_llm.chat.completions.create(
+            _registrar_requisicao_llm()
+            resposta = cliente_gemini.models.generate_content(
                 model=MODELO_LLM,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0.2,
-                max_tokens=max_tokens,
-                extra_headers=extra_headers or None,
-                # Trava a rota: só usa o modelo :free, nunca cai pra uma
-                # versão paga se o provedor gratuito estiver sobrecarregado.
-                extra_body={
-                    "models": [MODELO_LLM],
-                    "provider": {"allow_fallbacks": False},
-                },
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.2,
+                    max_output_tokens=max_tokens,
+                ),
             )
-            return resposta.choices[0].message.content
+            return resposta.text
 
         except Exception as e:
             erro_str = str(e).lower()
@@ -200,7 +198,7 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
 
             if tentativa == max_tentativas:
                 raise RuntimeError(
-                    f"Limite de {max_tentativas} tentativas no OpenRouter. Último erro: {e}"
+                    f"Limite de {max_tentativas} tentativas no Gemini. Último erro: {e}"
                 )
 
             retry_after = None
@@ -215,7 +213,7 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
                 espera = max(espera, 2.0)
 
             logger.warning(
-                "[gerar_resposta] 429 OpenRouter (tentativa %d/%d). Aguardando %.1fs...",
+                "[gerar_resposta] 429 Gemini (tentativa %d/%d). Aguardando %.1fs...",
                 tentativa, max_tentativas, espera,
             )
             time.sleep(espera)
@@ -619,6 +617,14 @@ async def api_storage_sincronizar():
         raise HTTPException(400, "Dataset não configurado. Defina HF_TOKEN e HF_DATASET_REPO no .env.")
     storage.sincronizar_tudo_do_bucket()
     return {"status": "ok"}
+
+
+@app.get("/api/llm/requisicoes")
+async def api_llm_requisicoes():
+    return {
+        "ultimo_minuto": _contar_requisicoes_ultimo_minuto(),
+        "limite_por_minuto": LIMITE_REQUISICOES_MINUTO,
+    }
 
 
 @app.get("/api/estilos_resumo")

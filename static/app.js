@@ -40,6 +40,10 @@ function escapeHtml(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[c]));
 }
+function renderizarMarkdown(texto, elemento) {
+  const html = marked.parse(texto ?? "", { breaks: true });
+  elemento.innerHTML = DOMPurify.sanitize(html);
+}
 
 // ── navegação entre abas ────────────────────────────────────
 const fichas = document.querySelectorAll(".ficha");
@@ -203,7 +207,8 @@ btnPerguntar.addEventListener("click", async () => {
     });
     ultimoResultadoPergunta = resultado;
 
-    textoResposta.textContent = resultado.resposta;
+    textoResposta.classList.add("markdown-corpo");
+    renderizarMarkdown(resultado.resposta, textoResposta);
 
     const emojiPorTipo = { texto: "📝", pagina_escaneada: "🖼️", figura: "📊" };
     listaTrechos.innerHTML = resultado.trechos.map((t, i) => `
@@ -357,7 +362,8 @@ async function acompanharJobResumir(jobId, pdf, banco, estiloChave) {
         const estiloLabel = estiloInfo ? estiloInfo.label : estiloChave;
         ultimoResumo = { nome_pdf: pdf, banco, resumo: job.resumo_final, estilo_label: estiloLabel };
         tituloResultadoResumir.textContent = `Resultado — ${estiloLabel}`;
-        textoResumo.textContent = job.resumo_final;
+        textoResumo.classList.add("markdown-corpo");
+        renderizarMarkdown(job.resumo_final, textoResumo);
         resultadoResumir.classList.remove("oculto");
       }
       break;
@@ -454,3 +460,27 @@ async function carregarStatus() {
 
 // carrega o status já na primeira visita, para a aba inicial ficar coerente
 carregarStatus();
+
+// ══════════════════════════════════════════════════════════
+// CONTADOR DE REQUISIÇÕES/MINUTO (visível em qualquer aba)
+// ══════════════════════════════════════════════════════════
+const contadorReq = document.getElementById("contador-requisicoes");
+const contadorReqValor = document.getElementById("contador-req-valor");
+const contadorReqLimite = document.getElementById("contador-req-limite");
+
+async function atualizarContadorRequisicoes() {
+  try {
+    const { ultimo_minuto, limite_por_minuto } = await apiGet("/api/llm/requisicoes");
+    contadorReqValor.textContent = ultimo_minuto;
+    contadorReqLimite.textContent = limite_por_minuto;
+
+    const proporcao = ultimo_minuto / limite_por_minuto;
+    contadorReq.classList.toggle("aviso", proporcao >= 0.6 && proporcao < 0.9);
+    contadorReq.classList.toggle("critico", proporcao >= 0.9);
+  } catch (e) {
+    // silencioso — não interrompe o uso do app por causa do contador
+  }
+}
+
+atualizarContadorRequisicoes();
+setInterval(atualizarContadorRequisicoes, 3000);

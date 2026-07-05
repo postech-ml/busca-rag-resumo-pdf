@@ -21,7 +21,7 @@ Frontend em HTML/CSS/JS puro, backend em FastAPI.
 | Frontend | HTML / CSS / JavaScript puro |
 | Backend | FastAPI + Uvicorn (Docker) |
 | Embeddings | Gemini `gemini-embedding-2-preview` (multimodal) |
-| LLM | OpenRouter `openai/gpt-oss-120b:free` |
+| LLM | Gemini `gemini-2.5-flash-lite` |
 | Banco vetorial | ChromaDB local |
 | Reranking | Flashrank |
 
@@ -104,7 +104,6 @@ Necessários tanto em um `.env` local quanto nas **Settings → Variables and se
 | Variável | Onde obter |
 |---|---|
 | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) |
-| `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `HF_TOKEN` / `HF_DATASET_REPO` | opcional — ver seção acima |
 
 ## Deploy no Hugging Face Spaces
