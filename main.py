@@ -3,7 +3,7 @@ main.py — Backend FastAPI para RAG com PDFs
 Substitui a interface Streamlit por uma API + frontend HTML puro.
 
 Embeddings : Gemini gemini-embedding-2-preview (multimodal — texto + imagens)
-LLM        : OpenRouter meta-llama/llama-4-maverick:free (grátis, ~1M de contexto)
+LLM        : OpenRouter nvidia/nemotron-3-ultra-550b-a55b:free (grátis, 1M de contexto)
 
 Variáveis de ambiente necessárias no .env:
     GEMINI_API_KEY=...
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # ── configuração ──────────────────────────────────────────────
 CHROMA_BASE_DIR = "./chroma_bancos"
-MODELO_LLM      = "meta-llama/llama-4-maverick:free"  # via OpenRouter — grátis, ~1M de contexto
+MODELO_LLM      = "nvidia/nemotron-3-ultra-550b-a55b:free"  # via OpenRouter — grátis, 1M de contexto
 OPENROUTER_URL  = "https://openrouter.ai/api/v1"
 
 _ERROS_429 = ("429", "rate_limit_exceeded", "rate limit", "too many requests", "resource_exhausted", "quota")
@@ -103,8 +103,8 @@ _JOBS_LOCK = threading.Lock()
 MAX_PARALELISMO_RESUMO = 1
 
 # ── rastreamento e controle de requisições/minuto ao LLM ────────
-LIMITE_REQUISICOES_MINUTO = 20  # tier gratuito real do Gemini (confirmado no erro da API)
-MARGEM_SEGURANCA_REQUISICOES = 3  # deixa folga maior — testes/restarts recentes também contam
+LIMITE_REQUISICOES_MINUTO = 20  # tier gratuito do OpenRouter (compartilhado entre todos os modelos :free)
+MARGEM_SEGURANCA_REQUISICOES = 3  # deixa folga antes do limite real
 _req_lock = threading.Lock()
 _req_timestamps: collections.deque = collections.deque()
 
