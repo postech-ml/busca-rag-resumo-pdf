@@ -297,6 +297,7 @@ Formate a saida em Markdown pensando em facilitar a memorizacao:
 
 # Anexada junto com a de formato — pede profundidade e cobertura completa,
 # em vez de uma compressao generica que pula artigos/numeros especificos.
+# Usada por padrao pela maioria dos estilos.
 INSTRUCAO_PROFUNDIDADE = """
 
 Seja exaustivo e aprofundado:
@@ -305,6 +306,21 @@ Seja exaustivo e aprofundado:
 - Para cada conceito, alem de definir, explique a razao de existir daquela
   regra e uma implicacao pratica dela — nao se limite a listar fatos soltos.
 - Prefira mais detalhe e interpretacao a um texto mais curto e generico."""
+
+# Alternativa usada pelo estilo Analitico — aqui o objetivo NAO e cobertura
+# exaustiva artigo por artigo, e sim interpretacao critica de verdade.
+INSTRUCAO_FOCO_CRITICO = """
+
+Priorize interpretacao sobre listagem de fatos:
+- Nao cubra artigo por artigo mecanicamente, nem use um template fixo
+  repetido pra cada parte (tipo "Padrao / Regra / Razao de ser / Implicacao").
+- Escolha os pontos mais reveladores — onde ha tensao entre principios
+  (ex: agilidade vs controle, flexibilidade vs risco de abuso), escolhas
+  do legislador que geram efeitos colaterais nao obvios, ou contradicoes
+  entre diferentes regras — e aprofunde a analise critica deles.
+- Menos e mais: prefira poucos pontos bem interpretados a muitos pontos
+  superficialmente listados. Pode deixar de fora detalhes administrativos
+  menores se isso der mais espaco pra interpretacao de verdade."""
 
 
 # ── estilos de resumo (mesmos textos do app.py) ────────────────
@@ -374,26 +390,34 @@ RESUMO EXECUTIVO FINAL:"""
     },
     "analitico": {
         "label": "🧠 Analítico",
-        "descricao": "Analisa criticamente cada parte, identificando argumentos, evidências e conclusões.",
-        "prompt_lote": lambda pdf, texto: f"""Voce e um analista critico examinando o documento '{pdf}'.
-Para CADA parte do texto encontrada, identifique e explique:
-- Qual e o argumento ou ideia central dessa parte
-- Quais evidencias ou dados sao apresentados
-- Qual e a conclusao ou implicacao dessa parte
-Organize em topicos, um por parte analisada.
+        "descricao": "Interpretação crítica de verdade: tensões, padrões e implicações — não uma lista de fatos por artigo.",
+        "instrucao_extra": INSTRUCAO_FOCO_CRITICO,
+        "prompt_lote": lambda pdf, texto: f"""Voce e um analista critico avaliando o documento '{pdf}'.
+Nao liste fatos soltos por parte do texto nem siga um template fixo repetido.
+Em vez disso, busque padroes, tensoes e implicacoes que atravessam os trechos abaixo:
+- Que problema pratico ou risco cada regra parece resolver ou criar?
+- Onde ha tensao entre principios (ex: agilidade vs controle, flexibilidade
+  vs risco de abuso, transparencia vs eficiencia)?
+- Que escolhas parecem discutiveis ou geram efeitos colaterais nao obvios?
+Escreva uma analise interpretativa corrida, nao uma lista mecanica de topicos.
+Pode deixar de fora detalhes administrativos menores se nao forem reveladores.
 
 TRECHOS:
 {texto}
 
-ANALISE CRITICA DE CADA PARTE:""",
-        "prompt_final": lambda pdf, consolidado: f"""Consolide a analise critica das partes do documento '{pdf}'.
-Identifique os padroes, contradicoes e conclusoes gerais que emergem da analise de cada parte.
-Apresente uma visao critica integrada do documento.
+ANALISE CRITICA:""",
+        "prompt_final": lambda pdf, consolidado: f"""Voce recebeu analises criticas de diferentes partes do documento '{pdf}'.
+Integre-as numa interpretacao coesa, priorizando:
+- Os padroes e tensoes mais relevantes que aparecem repetidamente
+- Contradicoes ou inconsistencias entre diferentes regras
+- Uma avaliacao geral fundamentada do documento como um todo
+Nao tente listar cada detalhe — foque no que e mais significativo pra
+entender o documento criticamente.
 
 ANALISES:
 {consolidado}
 
-ANALISE CRITICA FINAL INTEGRADA:"""
+ANALISE CRITICA INTEGRADA:"""
     },
     "comparativo": {
         "label": "📋 Comparativo",
@@ -519,7 +543,7 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
     divide o lote ao meio e tenta cada metade recursivamente, em vez de
     gravar a mensagem de erro como se fosse conteúdo do resumo."""
     texto_lote = "\n\n---PARTE---\n\n".join(chunks)
-    prompt     = estilo["prompt_lote"](pdf_sel, texto_lote) + INSTRUCAO_FORMATO_MD + INSTRUCAO_PROFUNDIDADE
+    prompt     = estilo["prompt_lote"](pdf_sel, texto_lote) + INSTRUCAO_FORMATO_MD + estilo.get("instrucao_extra", INSTRUCAO_PROFUNDIDADE)
 
     try:
         return gerar_resposta(prompt, max_tokens=6144)
@@ -557,7 +581,7 @@ def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profund
 
     if profundidade == 0 and len(textos) <= LIMITE_MERGE_LLM:
         sub        = "\n\n===\n\n".join([f"Secao {i+1}:\n{r}" for i, r in enumerate(textos)])
-        prompt_sub = estilo["prompt_final"](pdf_sel, sub) + INSTRUCAO_FORMATO_MD + INSTRUCAO_PROFUNDIDADE
+        prompt_sub = estilo["prompt_final"](pdf_sel, sub) + INSTRUCAO_FORMATO_MD + estilo.get("instrucao_extra", INSTRUCAO_PROFUNDIDADE)
 
         try:
             return gerar_resposta(prompt_sub, max_tokens=8192)
