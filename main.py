@@ -124,6 +124,32 @@ def _contar_requisicoes_ultimo_minuto() -> int:
         return len(_req_timestamps)
 
 
+# ── bloqueio global de cota (circuit breaker) ───────────────────
+# Insistir em chamar a API enquanto a cota já está estourada parece
+# CONTAR como mais uma requisição e prolongar o bloqueio (o tempo de
+# espera sugerido pelo Gemini às vezes AUMENTA entre tentativas). Por
+# isso, em vez de cada chamada tentar por conta própria, guardamos um
+# horário global até quando o app inteiro deve evitar chamar o LLM.
+_bloqueio_lock = threading.Lock()
+_bloqueado_ate = 0.0
+
+
+def _verificar_bloqueio_global():
+    """Se alguma chamada recente já descobriu que a cota está estourada,
+    espera até o horário conhecido de liberação antes de tentar de novo."""
+    with _bloqueio_lock:
+        ate = _bloqueado_ate
+    agora = time.time()
+    if agora < ate:
+        time.sleep(ate - agora + 0.5)
+
+
+def _registrar_bloqueio_global(segundos: float):
+    global _bloqueado_ate
+    with _bloqueio_lock:
+        _bloqueado_ate = max(_bloqueado_ate, time.time() + segundos)
+
+
 # ── helpers de banco (idênticos ao app.py, sem cache do Streamlit) ─
 def _slug(texto: str) -> str:
     texto = texto.strip().lower()
@@ -180,6 +206,7 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
 
     for tentativa in range(1, max_tentativas + 1):
         try:
+            _verificar_bloqueio_global()
             _aguardar_vaga_llm()
             resposta = cliente_gemini.models.generate_content(
                 model=MODELO_LLM,
@@ -206,18 +233,15 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
             if not eh_429:
                 raise
 
-            if tentativa == max_tentativas:
-                raise RuntimeError(
-                    f"Limite de {max_tentativas} tentativas no Gemini. Último erro: {e}"
-                )
-
             retry_after = None
             if hasattr(e, "response") and e.response is not None:
                 retry_after = e.response.headers.get("retry-after")
 
             # O Gemini costuma informar o tempo exato de espera no corpo do
             # erro (ex: "Please retry in 30.98s"). Usar esse valor é mais
-            # preciso do que nosso backoff estimado.
+            # preciso do que nosso backoff estimado — e registramos esse
+            # horário globalmente, pra nenhuma outra chamada insistir antes
+            # da hora (insistir parece prolongar o próprio bloqueio).
             espera_sugerida_gemini = None
             match_retry = re.search(r"retry in ([\d.]+)\s*s", str(e), re.IGNORECASE)
             if match_retry:
@@ -225,12 +249,19 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
 
             if espera_sugerida_gemini is not None:
                 espera = espera_sugerida_gemini + random.uniform(0.5, 2.0)
+                _registrar_bloqueio_global(espera_sugerida_gemini)
             elif retry_after:
                 espera = min(float(retry_after), 60.0) + random.uniform(0.5, 2.0)
+                _registrar_bloqueio_global(float(retry_after))
             else:
                 espera = min(espera_base * (2 ** (tentativa - 1)), espera_max)
                 espera += random.uniform(-2.0, 2.0)
                 espera = max(espera, 2.0)
+
+            if tentativa == max_tentativas:
+                raise RuntimeError(
+                    f"Limite de {max_tentativas} tentativas no Gemini. Último erro: {e}"
+                )
 
             logger.warning(
                 "[gerar_resposta] 429 Gemini (tentativa %d/%d). Aguardando %.1fs... Detalhe: %s",
