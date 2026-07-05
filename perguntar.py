@@ -1,7 +1,7 @@
 """
 perguntar.py — busca, rerank e montagem de contexto
 Usa gemini-embedding-2-preview para embedding da pergunta
-LLM: OpenRouter nvidia/nemotron-3-ultra-550b-a55b:free (via main.py)
+LLM: OpenRouter google/gemini-2.5-flash-lite (via main.py)
 """
 
 from google import genai

@@ -21,7 +21,7 @@ Frontend em HTML/CSS/JS puro, backend em FastAPI.
 | Frontend | HTML / CSS / JavaScript puro |
 | Backend | FastAPI + Uvicorn (Docker) |
 | Embeddings | Gemini `gemini-embedding-2-preview` (multimodal) |
-| LLM | OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free` |
+| LLM | OpenRouter `google/gemini-2.5-flash-lite` (pago) |
 | Banco vetorial | ChromaDB local |
 | Reranking | Flashrank |
 

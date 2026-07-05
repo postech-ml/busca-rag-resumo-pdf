@@ -3,7 +3,7 @@ main.py — Backend FastAPI para RAG com PDFs
 Substitui a interface Streamlit por uma API + frontend HTML puro.
 
 Embeddings : Gemini gemini-embedding-2-preview (multimodal — texto + imagens)
-LLM        : OpenRouter nvidia/nemotron-3-ultra-550b-a55b:free (grátis, 1M de contexto)
+LLM        : OpenRouter google/gemini-2.5-flash-lite (pago — $0,10/$0,40 por 1M tokens, 1M contexto)
 
 Variáveis de ambiente necessárias no .env:
     GEMINI_API_KEY=...
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # ── configuração ──────────────────────────────────────────────
 CHROMA_BASE_DIR = "./chroma_bancos"
-MODELO_LLM      = "nvidia/nemotron-3-ultra-550b-a55b:free"  # via OpenRouter — grátis, 1M de contexto
+MODELO_LLM      = "google/gemini-2.5-flash-lite"  # via OpenRouter, pago — $0,10/$0,40 por 1M tokens, 1M contexto
 OPENROUTER_URL  = "https://openrouter.ai/api/v1"
 
 _ERROS_429 = ("429", "rate_limit_exceeded", "rate limit", "too many requests", "resource_exhausted", "quota")
@@ -103,7 +103,7 @@ _JOBS_LOCK = threading.Lock()
 MAX_PARALELISMO_RESUMO = 1
 
 # ── rastreamento e controle de requisições/minuto ao LLM ────────
-LIMITE_REQUISICOES_MINUTO = 20  # tier gratuito do OpenRouter (compartilhado entre todos os modelos :free)
+LIMITE_REQUISICOES_MINUTO = 1000  # tier pago do OpenRouter — bem mais folgado; valor conservador de referência
 MARGEM_SEGURANCA_REQUISICOES = 3  # deixa folga antes do limite real
 _req_lock = threading.Lock()
 _req_timestamps: collections.deque = collections.deque()
@@ -209,7 +209,7 @@ def listar_pdfs(nome_banco: str) -> list[str]:
         return []
 
 
-# ── geração de resposta via Gemini com backoff exponencial ─────
+# ── geração de resposta via OpenRouter com backoff exponencial ─
 def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096) -> str:
     espera_base = 5.0
     espera_max  = 90.0
@@ -226,8 +226,8 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
                 ],
                 temperature=0.2,
                 max_tokens=max_tokens,
-                # Trava a rota: só usa o modelo :free, nunca cai pra uma
-                # versão paga se o provedor gratuito estiver sobrecarregado.
+                # Trava a rota: garante que a chamada usa exatamente esse
+                # modelo/provedor, sem cair pra outra alternativa qualquer.
                 extra_body={
                     "models": [MODELO_LLM],
                     "provider": {"allow_fallbacks": False},
