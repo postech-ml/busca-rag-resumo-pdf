@@ -526,14 +526,19 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
 
 
 def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profundidade: int = 0) -> str:
-    """Consolida uma lista de textos em um único texto final. Agrupa de 3 em 3
-    e chama o LLM em paralelo; se um grupo ficar grande demais, subdivide ao
-    meio em vez de gravar o erro como conteúdo. Repete até sobrar um único texto."""
+    """Consolida uma lista de textos, reduzindo o volume em rodadas (agrupa de
+    3 em 3 e resume cada grupo via LLM, em paralelo). Importante: uma vez que
+    já houve pelo menos uma rodada de consolidação (documento grande o
+    suficiente pra isso), a última etapa NÃO pede pro modelo reescrever tudo
+    numa única resposta — isso arriscaria estourar o limite de tokens de
+    saída e cortar o resumo no meio (o que já aconteceu). Em vez disso, os
+    pedaços finais são concatenados, preservando o conteúdo por completo.
+    Documentos pequenos (que nunca precisaram de mais de uma rodada) ainda
+    recebem a passada final de polimento normalmente, sem esse risco."""
     if len(textos) == 1:
         return textos[0]
 
-    GRUPO  = 3
-    grupos = [textos[g:g + GRUPO] for g in range(0, len(textos), GRUPO)]
+    GRUPO = 3
 
     def _consolidar_grupo(grupo: list[str]) -> str:
         if len(grupo) == 1:
@@ -552,6 +557,18 @@ def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profund
                 return parte1 + "\n\n" + parte2
             # Idem: erro real propaga, não vira texto de conteúdo.
             raise
+
+    if len(textos) <= GRUPO:
+        if profundidade == 0:
+            # Documento pequeno desde o início — só essa rodada existe,
+            # seguro pedir um texto único e coeso ao modelo.
+            return _consolidar_grupo(textos)
+        # Já passamos por pelo menos uma consolidação anterior — o conteúdo
+        # acumulado pode ser grande demais pra uma resposta só. Concatena
+        # direto em vez de arriscar cortar o resumo no meio.
+        return "\n\n---\n\n".join(textos)
+
+    grupos = [textos[g:g + GRUPO] for g in range(0, len(textos), GRUPO)]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALELISMO_RESUMO) as executor:
         proximos = list(executor.map(_consolidar_grupo, grupos))
