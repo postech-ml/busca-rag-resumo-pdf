@@ -223,8 +223,8 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
                 espera = max(espera, 2.0)
 
             logger.warning(
-                "[gerar_resposta] 429 Gemini (tentativa %d/%d). Aguardando %.1fs...",
-                tentativa, max_tentativas, espera,
+                "[gerar_resposta] 429 Gemini (tentativa %d/%d). Aguardando %.1fs... Detalhe: %s",
+                tentativa, max_tentativas, espera, str(e)[:500],
             )
             time.sleep(espera)
 
