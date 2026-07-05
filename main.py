@@ -93,8 +93,8 @@ _JOBS_LOCK = threading.Lock()
 MAX_PARALELISMO_RESUMO = 1
 
 # ── rastreamento e controle de requisições/minuto ao LLM ────────
-LIMITE_REQUISICOES_MINUTO = 15  # tier gratuito do Gemini (gemini-2.5-flash-lite)
-MARGEM_SEGURANCA_REQUISICOES = 1  # deixa folga antes do limite real, evitando o 429
+LIMITE_REQUISICOES_MINUTO = 20  # tier gratuito real do Gemini (confirmado no erro da API)
+MARGEM_SEGURANCA_REQUISICOES = 3  # deixa folga maior — testes/restarts recentes também contam
 _req_lock = threading.Lock()
 _req_timestamps: collections.deque = collections.deque()
 
@@ -215,7 +215,17 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
             if hasattr(e, "response") and e.response is not None:
                 retry_after = e.response.headers.get("retry-after")
 
-            if retry_after:
+            # O Gemini costuma informar o tempo exato de espera no corpo do
+            # erro (ex: "Please retry in 30.98s"). Usar esse valor é mais
+            # preciso do que nosso backoff estimado.
+            espera_sugerida_gemini = None
+            match_retry = re.search(r"retry in ([\d.]+)\s*s", str(e), re.IGNORECASE)
+            if match_retry:
+                espera_sugerida_gemini = float(match_retry.group(1))
+
+            if espera_sugerida_gemini is not None:
+                espera = espera_sugerida_gemini + random.uniform(0.5, 2.0)
+            elif retry_after:
                 espera = min(float(retry_after), 60.0) + random.uniform(0.5, 2.0)
             else:
                 espera = min(espera_base * (2 ** (tentativa - 1)), espera_max)
@@ -454,7 +464,7 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
     prompt     = estilo["prompt_lote"](pdf_sel, texto_lote) + INSTRUCAO_FORMATO_MD
 
     try:
-        return gerar_resposta(prompt, max_tokens=3072)
+        return gerar_resposta(prompt, max_tokens=8192)
     except Exception as e:
         if _eh_erro_de_tamanho(e) and len(chunks) > 1 and profundidade < 6:
             meio = len(chunks) // 2
@@ -515,7 +525,7 @@ def _job_resumir(job_id: str, banco: str, pdf_sel: str, estilo_key: str):
             job["erro"]   = "Nenhum chunk encontrado para este PDF."
             return
 
-        LOTE = 20
+        LOTE = 60
         lotes = [chunks[i:i + LOTE] for i in range(0, len(chunks), LOTE)]
         total_lotes = len(lotes)
         job["total_lotes"] = total_lotes
