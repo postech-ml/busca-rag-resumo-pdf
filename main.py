@@ -503,7 +503,10 @@ def _gerar_resumo_lote_seguro(pdf_sel: str, estilo: dict, chunks: list[str], pro
             time.sleep(2)
             parte2 = _gerar_resumo_lote_seguro(pdf_sel, estilo, chunks[meio:], profundidade + 1)
             return parte1 + "\n\n" + parte2
-        return f"[Erro no lote: {e}]"
+        # Qualquer outro erro (rate limit esgotado, falha de rede etc.) não
+        # deve virar "conteúdo" do resumo — propaga de verdade, interrompendo
+        # o job com uma mensagem de erro clara em vez de um resultado confuso.
+        raise
 
 
 def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profundidade: int = 0) -> str:
@@ -531,7 +534,8 @@ def _consolidar_recursivo(pdf_sel: str, estilo: dict, textos: list[str], profund
                 parte1 = _consolidar_recursivo(pdf_sel, estilo, grupo[:meio], profundidade + 1)
                 parte2 = _consolidar_recursivo(pdf_sel, estilo, grupo[meio:], profundidade + 1)
                 return parte1 + "\n\n" + parte2
-            return f"[Erro ao consolidar grupo: {e}]"
+            # Idem: erro real propaga, não vira texto de conteúdo.
+            raise
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALELISMO_RESUMO) as executor:
         proximos = list(executor.map(_consolidar_grupo, grupos))
