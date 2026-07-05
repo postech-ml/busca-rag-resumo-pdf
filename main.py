@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 import random
+import shutil
 import logging
 import threading
 import collections
@@ -660,6 +661,51 @@ async def api_listar_bancos():
 @app.get("/api/bancos/{banco}/pdfs")
 async def api_listar_pdfs(banco: str):
     return {"pdfs": listar_pdfs(banco)}
+
+
+@app.delete("/api/bancos/{banco}")
+async def api_excluir_banco(banco: str):
+    if banco not in listar_bancos():
+        raise HTTPException(404, f"Banco '{banco}' não encontrado.")
+
+    try:
+        # Remove o cliente em memória, se existir, antes de apagar a pasta
+        with _chroma_lock:
+            _chroma_clientes.pop(banco, None)
+
+        pasta = os.path.join(CHROMA_BASE_DIR, banco)
+        if os.path.isdir(pasta):
+            shutil.rmtree(pasta)
+
+        # Remove também do backup remoto (Dataset do Hugging Face), se configurado
+        storage.excluir_banco_do_bucket(banco)
+
+        return {"status": "ok", "banco": banco}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao excluir banco '{banco}': {e}")
+
+
+@app.delete("/api/bancos/{banco}/pdfs/{pdf}")
+async def api_excluir_pdf(banco: str, pdf: str):
+    if banco not in listar_bancos():
+        raise HTTPException(404, f"Banco '{banco}' não encontrado.")
+
+    try:
+        colecao = get_colecao(banco)
+        resultado = colecao.get(where={"arquivo": pdf})
+        if not resultado["ids"]:
+            raise HTTPException(404, f"PDF '{pdf}' não encontrado no banco '{banco}'.")
+
+        colecao.delete(where={"arquivo": pdf})
+
+        # Sincroniza o estado atualizado do banco para o backup remoto
+        storage.sincronizar_banco_para_bucket(banco)
+
+        return {"status": "ok", "banco": banco, "pdf": pdf}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao excluir PDF '{pdf}' do banco '{banco}': {e}")
 
 
 @app.get("/api/status")

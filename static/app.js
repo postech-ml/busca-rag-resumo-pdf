@@ -438,20 +438,68 @@ async function carregarStatus() {
         return `<div class="banco-card"><div class="banco-cabecalho">🗄️ ${escapeHtml(b.banco)} <span class="banco-erro mono">${escapeHtml(b.erro)}</span></div></div>`;
       }
       return `
-        <div class="banco-card" data-idx="${i}">
+        <div class="banco-card" data-idx="${i}" data-banco="${escapeHtml(b.banco)}">
           <div class="banco-cabecalho">
             <span>🗄️ ${escapeHtml(b.banco)}</span>
-            <span class="mono">${b.chunks} itens · ${b.pdfs.length} PDF(s)</span>
+            <span class="banco-cabecalho-acoes">
+              <span class="mono">${b.chunks} itens · ${b.pdfs.length} PDF(s)</span>
+              <button class="botao-excluir-banco" title="Excluir banco inteiro" data-banco="${escapeHtml(b.banco)}">🗑️</button>
+            </span>
           </div>
           <div class="banco-pdfs">
-            ${b.pdfs.map((p) => `<div>• ${escapeHtml(p)}</div>`).join("") || "<div>Nenhum PDF.</div>"}
+            ${b.pdfs.map((p) => `
+              <div class="pdf-linha">
+                <span>${escapeHtml(p)}</span>
+                <button class="botao-excluir-pdf" title="Excluir este PDF" data-banco="${escapeHtml(b.banco)}" data-pdf="${escapeHtml(p)}">🗑️</button>
+              </div>
+            `).join("") || "<div>Nenhum PDF.</div>"}
           </div>
         </div>
       `;
     }).join("");
 
     listaStatus.querySelectorAll(".banco-cabecalho").forEach((cab) => {
-      cab.addEventListener("click", () => cab.closest(".banco-card").classList.toggle("aberto"));
+      cab.addEventListener("click", (ev) => {
+        if (ev.target.closest(".botao-excluir-banco")) return;
+        cab.closest(".banco-card").classList.toggle("aberto");
+      });
+    });
+
+    listaStatus.querySelectorAll(".botao-excluir-banco").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const banco = btn.dataset.banco;
+        if (!confirm(`Excluir o banco inteiro "${banco}"? Isso apaga todos os PDFs indexados nele, sem volta.`)) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/bancos/${encodeURIComponent(banco)}`, { method: "DELETE" });
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `Erro ${r.status}`);
+          bancosPerguntarCarregados = false;
+          bancosResumirCarregados = false;
+          await carregarStatus();
+        } catch (e) {
+          alert("Erro ao excluir banco: " + e.message);
+          btn.disabled = false;
+        }
+      });
+    });
+
+    listaStatus.querySelectorAll(".botao-excluir-pdf").forEach((btn) => {
+      btn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        const banco = btn.dataset.banco;
+        const pdf = btn.dataset.pdf;
+        if (!confirm(`Excluir o PDF "${pdf}" do banco "${banco}"? Sem volta.`)) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/bancos/${encodeURIComponent(banco)}/pdfs/${encodeURIComponent(pdf)}`, { method: "DELETE" });
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `Erro ${r.status}`);
+          await carregarStatus();
+        } catch (e) {
+          alert("Erro ao excluir PDF: " + e.message);
+          btn.disabled = false;
+        }
+      });
     });
   } catch (e) {
     alert("Erro ao carregar status: " + e.message);

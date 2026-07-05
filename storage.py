@@ -104,3 +104,27 @@ def sincronizar_banco_para_bucket(nome_banco: str):
         logger.info(f"[storage] Banco '{nome_banco}' sincronizado para o dataset '{HF_DATASET_REPO}'.")
     except Exception as e:
         logger.error(f"[storage] Falha ao sincronizar banco '{nome_banco}' para o dataset: {e}")
+
+
+def excluir_banco_do_bucket(nome_banco: str):
+    """Remove todos os arquivos de um banco do dataset remoto (backup).
+    Não afeta o disco local — chame junto com a remoção da pasta local."""
+    if not HABILITADO:
+        return
+
+    try:
+        from huggingface_hub import HfApi
+
+        with _lock:
+            _garantir_repo()
+            api = HfApi(token=HF_TOKEN)
+            api.delete_folder(
+                repo_id=HF_DATASET_REPO,
+                path_in_repo=nome_banco,
+                repo_type="dataset",
+                commit_message=f"Remove banco '{nome_banco}'",
+            )
+        logger.info(f"[storage] Banco '{nome_banco}' removido do dataset '{HF_DATASET_REPO}'.")
+    except Exception as e:
+        # Pode falhar se a pasta não existir no remoto (ex: banco nunca sincronizado) — não é crítico.
+        logger.warning(f"[storage] Não foi possível remover banco '{nome_banco}' do dataset: {e}")
