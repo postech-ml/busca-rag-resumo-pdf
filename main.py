@@ -3,10 +3,11 @@ main.py — Backend FastAPI para RAG com PDFs
 Substitui a interface Streamlit por uma API + frontend HTML puro.
 
 Embeddings : Gemini gemini-embedding-2-preview (multimodal — texto + imagens)
-LLM        : Gemini gemini-2.5-flash-lite (grátis, 1M de contexto, infraestrutura própria do Google)
+LLM        : OpenRouter meta-llama/llama-4-maverick:free (grátis, ~1M de contexto)
 
-Variável de ambiente necessária no .env:
+Variáveis de ambiente necessárias no .env:
     GEMINI_API_KEY=...
+    OPENROUTER_API_KEY=...
 """
 
 import os
@@ -27,6 +28,7 @@ from pydantic import BaseModel
 import chromadb
 from google import genai
 from google.genai import types
+from openai import OpenAI
 from flashrank import Ranker
 from dotenv import load_dotenv
 
@@ -42,7 +44,8 @@ logger = logging.getLogger(__name__)
 
 # ── configuração ──────────────────────────────────────────────
 CHROMA_BASE_DIR = "./chroma_bancos"
-MODELO_LLM      = "gemini-2.5-flash-lite"  # grátis, 1M de contexto, infra própria do Google
+MODELO_LLM      = "meta-llama/llama-4-maverick:free"  # via OpenRouter — grátis, ~1M de contexto
+OPENROUTER_URL  = "https://openrouter.ai/api/v1"
 
 _ERROS_429 = ("429", "rate_limit_exceeded", "rate limit", "too many requests", "resource_exhausted", "quota")
 _ERROS_413 = ("413", "request too large", "request_too_large", "token limit", "context length", "context_length_exceeded")
@@ -52,17 +55,24 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── inicialização dos clientes (uma vez, no startup) ───────────
 def _inicializar():
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    gemini_key     = os.environ.get("GEMINI_API_KEY")
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
 
+    faltando = []
     if not gemini_key:
-        raise RuntimeError("Chave não encontrada no .env: GEMINI_API_KEY")
+        faltando.append("GEMINI_API_KEY")
+    if not openrouter_key:
+        faltando.append("OPENROUTER_API_KEY")
+    if faltando:
+        raise RuntimeError(f"Chaves não encontradas no .env: {', '.join(faltando)}")
 
     cliente_gemini = genai.Client(api_key=gemini_key)
+    cliente_llm    = OpenAI(api_key=openrouter_key, base_url=OPENROUTER_URL)
     ranker         = Ranker()
-    return cliente_gemini, ranker
+    return cliente_gemini, cliente_llm, ranker
 
 
-cliente_gemini, ranker = _inicializar()
+cliente_gemini, cliente_llm, ranker = _inicializar()
 
 app = FastAPI(title="RAG com PDFs")
 
@@ -208,16 +218,22 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
         try:
             _verificar_bloqueio_global()
             _aguardar_vaga_llm()
-            resposta = cliente_gemini.models.generate_content(
+            resposta = cliente_llm.chat.completions.create(
                 model=MODELO_LLM,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
-                    max_output_tokens=max_tokens,
-                ),
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=max_tokens,
+                # Trava a rota: só usa o modelo :free, nunca cai pra uma
+                # versão paga se o provedor gratuito estiver sobrecarregado.
+                extra_body={
+                    "models": [MODELO_LLM],
+                    "provider": {"allow_fallbacks": False},
+                },
             )
-            return resposta.text
+            return resposta.choices[0].message.content
 
         except Exception as e:
             erro_str = str(e).lower()
@@ -260,11 +276,11 @@ def gerar_resposta(prompt: str, max_tentativas: int = 6, max_tokens: int = 4096)
 
             if tentativa == max_tentativas:
                 raise RuntimeError(
-                    f"Limite de {max_tentativas} tentativas no Gemini. Último erro: {e}"
+                    f"Limite de {max_tentativas} tentativas no OpenRouter. Último erro: {e}"
                 )
 
             logger.warning(
-                "[gerar_resposta] 429 Gemini (tentativa %d/%d). Aguardando %.1fs... Detalhe: %s",
+                "[gerar_resposta] 429 OpenRouter (tentativa %d/%d). Aguardando %.1fs... Detalhe: %s",
                 tentativa, max_tentativas, espera, str(e)[:500],
             )
             time.sleep(espera)
